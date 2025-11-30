@@ -44,6 +44,7 @@ typedef struct
 typedef enum
 {
   BLOCK_AIR = 0,
+  BLOCK_NONE = 0, // alias for selection clarity
   BLOCK_GRASS,
   BLOCK_DIRT,
   BLOCK_STONE,

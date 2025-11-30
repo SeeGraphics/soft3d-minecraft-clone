@@ -251,6 +251,8 @@ static const char *block_name(BlockType t)
 {
   switch (t)
   {
+  case BLOCK_AIR:
+    return "NONE";
   case BLOCK_GRASS:
     return "GRASS";
   case BLOCK_DIRT:
@@ -292,9 +294,136 @@ static int compare_transparent_face(const void *a, const void *b)
   return 0;
 }
 
+static inline u32 blend_argb(u32 src, u32 dst, u8 alpha)
+{
+  u8 src_r = (src >> 16) & 0xFF;
+  u8 src_g = (src >> 8) & 0xFF;
+  u8 src_b = src & 0xFF;
+
+  u8 dst_r = (dst >> 16) & 0xFF;
+  u8 dst_g = (dst >> 8) & 0xFF;
+  u8 dst_b = dst & 0xFF;
+
+  u8 out_r = (u8)((src_r * alpha + dst_r * (255 - alpha)) / 255);
+  u8 out_g = (u8)((src_g * alpha + dst_g * (255 - alpha)) / 255);
+  u8 out_b = (u8)((src_b * alpha + dst_b * (255 - alpha)) / 255);
+
+  return 0xFF000000u | ((u32)out_r << 16) | ((u32)out_g << 8) | (u32)out_b;
+}
+
+static void block_preview_texture(const Mc *mc, BlockType t,
+                                  const Texture **main_tex)
+{
+  *main_tex = NULL;
+  switch (t)
+  {
+  case BLOCK_GRASS:
+    *main_tex = &mc->grass_side_tex;
+    break;
+  case BLOCK_OAK_LOG:
+    *main_tex = &mc->oak_log_side_tex;
+    break;
+  case BLOCK_DIRT:
+    *main_tex = &mc->dirt_tex;
+    break;
+  case BLOCK_STONE:
+    *main_tex = &mc->stone_tex;
+    break;
+  case BLOCK_OAK_PLANKS:
+    *main_tex = &mc->oak_planks_tex;
+    break;
+  case BLOCK_COBBLESTONE:
+    *main_tex = &mc->cobblestone_tex;
+    break;
+  case BLOCK_LEAVES:
+    *main_tex = &mc->leaves_tex;
+    break;
+  case BLOCK_GLASS:
+    *main_tex = &mc->glass_tex;
+    break;
+  default:
+    break;
+  }
+}
+
+static void blit_texture_scaled(u32 *buffer, int bw, int bh, const Texture *tex,
+                                int dst_x, int dst_y, int dst_size)
+{
+  if (!tex || !tex->pixels || dst_size <= 0)
+  {
+    return;
+  }
+  for (int y = 0; y < dst_size; y++)
+  {
+    int sy = (int)((float)y / (float)dst_size * (float)tex->h);
+    if (sy >= tex->h)
+      sy = tex->h - 1;
+    int py = dst_y + y;
+    if (py < 0 || py >= bh)
+      continue;
+    for (int x = 0; x < dst_size; x++)
+    {
+      int sx = (int)((float)x / (float)dst_size * (float)tex->w);
+      if (sx >= tex->w)
+        sx = tex->w - 1;
+      int px = dst_x + x;
+      if (px < 0 || px >= bw)
+        continue;
+
+      u32 sample = tex->pixels[sy * tex->w + sx];
+      u8 alpha = (u8)(sample >> 24);
+      if (alpha == 0)
+        continue;
+      int idx = py * bw + px;
+      if (alpha < 255)
+      {
+        buffer[idx] = blend_argb(sample, buffer[idx], alpha);
+      }
+      else
+      {
+        buffer[idx] = sample | 0xFF000000u;
+      }
+    }
+  }
+}
+
+static void draw_block_preview(Mc *mc)
+{
+  const Texture *main_tex;
+  block_preview_texture(mc, mc->selected_block, &main_tex);
+  if (!main_tex || !main_tex->pixels)
+  {
+    return; // nothing to show
+  }
+
+  Game *game = &mc->game;
+  int margin = 8;
+  int size = game->render_h / 5;
+  if (size < 32)
+    size = 32;
+  if (size > 96)
+    size = 96;
+  int dst_x = margin;
+  int dst_y = (int)game->render_h - size - margin;
+  blit_texture_scaled(game->buffer, (int)game->render_w, (int)game->render_h,
+                      main_tex, dst_x, dst_y, size);
+
+  // Outline
+  draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+             (v2i){dst_x, dst_y}, (v2i){dst_x + size - 1, dst_y}, WHITE);
+  draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+             (v2i){dst_x, dst_y + size - 1},
+             (v2i){dst_x + size - 1, dst_y + size - 1}, WHITE);
+  draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+             (v2i){dst_x, dst_y}, (v2i){dst_x, dst_y + size - 1}, WHITE);
+  draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+             (v2i){dst_x + size - 1, dst_y},
+             (v2i){dst_x + size - 1, dst_y + size - 1}, WHITE);
+}
+
 static void cycle_block(Mc *mc, bool forward)
 {
-  static const BlockType order[] = {BLOCK_GRASS, BLOCK_DIRT, BLOCK_STONE,
+  static const BlockType order[] = {BLOCK_AIR, BLOCK_GRASS, BLOCK_DIRT, BLOCK_STONE,
                                     BLOCK_OAK_LOG, BLOCK_OAK_PLANKS, BLOCK_COBBLESTONE,
                                     BLOCK_LEAVES, BLOCK_GLASS};
   const int count = (int)(sizeof(order) / sizeof(order[0]));
@@ -570,6 +699,10 @@ void mc_handle_event(Mc *mc, const SDL_Event *event)
     {
       mc->running = false;
     }
+    if (event->key.keysym.sym == SDLK_0)
+    {
+      mc->selected_block = BLOCK_AIR;
+    }
     if (event->key.keysym.sym == SDLK_1)
     {
       mc->selected_block = BLOCK_GRASS;
@@ -664,7 +797,8 @@ void mc_handle_event(Mc *mc, const SDL_Event *event)
           int tx = hx + (int)normal.x;
           int ty = hy + (int)normal.y;
           int tz = hz + (int)normal.z;
-          if (block_get(mc, tx, ty, tz) == BLOCK_AIR)
+          if (mc->selected_block != BLOCK_AIR &&
+              block_get(mc, tx, ty, tz) == BLOCK_AIR)
           {
             block_set(mc, tx, ty, tz, mc->selected_block);
           }
@@ -1152,6 +1286,8 @@ void mc_frame(Mc *mc, Uint32 now, float dt)
   char block_text[64];
   snprintf(block_text, sizeof(block_text), "BLOCK: %s", block_name(mc->selected_block));
   draw_text(game->buffer, game->render_w, (v2i){5, 50}, block_text, WHITE);
+
+  draw_block_preview(mc);
 
   // Crosshair at the render center
   v2i center = {(int)(game->render_w / 2), (int)(game->render_h / 2)};
