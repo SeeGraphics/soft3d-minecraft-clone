@@ -1,0 +1,18 @@
+#pragma once
+
+#include "types.h"
+#include <stdbool.h>
+
+#define WIREFRAME 0
+#define FILLED 1
+
+void draw_triangle(u32 *buffer, int w, int h, v2i p1, v2i p2, v2i p3, u32 color,
+                   u32 mode);
+void draw_triangle_dots(u32 *buffer, int w, int h, v2i p1, v2i p2, v2i p3,
+                        u32 color, u32 mode);
+void draw_cirlcei(u32 *buffer, int w, v2i pos, int r, u32 color);
+void draw_textured_triangle(u32 *buffer, float *depth, int w, int h, Texture *tex,
+                            VertexPC v0, VertexPC v1, VertexPC v2);
+void draw_textured_triangle_alpha(u32 *buffer, float *depth, int w, int h,
+                                  Texture *tex, VertexPC v0, VertexPC v1,
+                                  VertexPC v2, bool write_depth);
