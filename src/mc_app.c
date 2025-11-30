@@ -346,6 +346,40 @@ static void block_preview_texture(const Mc *mc, BlockType t,
   }
 }
 
+static void draw_filled_rect(u32 *buffer, int bw, int bh, int x0, int y0, int x1,
+                             int y1, u32 color)
+{
+  if (x0 > x1)
+  {
+    int t = x0;
+    x0 = x1;
+    x1 = t;
+  }
+  if (y0 > y1)
+  {
+    int t = y0;
+    y0 = y1;
+    y1 = t;
+  }
+  if (x0 < 0)
+    x0 = 0;
+  if (y0 < 0)
+    y0 = 0;
+  if (x1 >= bw)
+    x1 = bw - 1;
+  if (y1 >= bh)
+    y1 = bh - 1;
+  u8 alpha = (u8)(color >> 24);
+  for (int y = y0; y <= y1; y++)
+  {
+    int idx = y * bw + x0;
+    for (int x = x0; x <= x1; x++, idx++)
+    {
+      buffer[idx] = blend_argb(color, buffer[idx], alpha);
+    }
+  }
+}
+
 static void blit_texture_scaled(u32 *buffer, int bw, int bh, const Texture *tex,
                                 int dst_x, int dst_y, int dst_size)
 {
@@ -417,8 +451,66 @@ static void draw_block_preview(Mc *mc)
   draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
              (v2i){dst_x, dst_y}, (v2i){dst_x, dst_y + size - 1}, WHITE);
   draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
-             (v2i){dst_x + size - 1, dst_y},
-             (v2i){dst_x + size - 1, dst_y + size - 1}, WHITE);
+              (v2i){dst_x + size - 1, dst_y},
+              (v2i){dst_x + size - 1, dst_y + size - 1}, WHITE);
+}
+
+static void draw_inventory(Mc *mc)
+{
+  if (!mc->game.inventory_open)
+  {
+    return;
+  }
+  Game *game = &mc->game;
+  static const BlockType slots[] = {BLOCK_AIR, BLOCK_GRASS, BLOCK_DIRT, BLOCK_STONE,
+                                    BLOCK_OAK_LOG, BLOCK_OAK_PLANKS, BLOCK_COBBLESTONE,
+                                    BLOCK_LEAVES, BLOCK_GLASS};
+  const int count = (int)(sizeof(slots) / sizeof(slots[0]));
+  int slot_size = game->render_h / 12;
+  if (slot_size < 40)
+    slot_size = 40;
+  if (slot_size > 72)
+    slot_size = 72;
+  int padding = slot_size / 6;
+  int total_w = count * (slot_size + padding) + padding;
+  int panel_w = total_w + padding * 2;
+  int panel_h = slot_size + padding * 3 + 12;
+  int panel_x = ((int)game->render_w - panel_w) / 2;
+  int panel_y = (int)game->render_h - panel_h - 20;
+
+  draw_filled_rect(game->buffer, (int)game->render_w, (int)game->render_h,
+                   panel_x, panel_y, panel_x + panel_w, panel_y + panel_h,
+                   0xC0000000u);
+
+  for (int i = 0; i < count; i++)
+  {
+    int x = panel_x + padding * 2 + i * (slot_size + padding);
+    int y = panel_y + padding * 2 + 12;
+    draw_filled_rect(game->buffer, (int)game->render_w, (int)game->render_h, x, y,
+                     x + slot_size, y + slot_size, 0x40000000u);
+
+    const Texture *tex;
+    block_preview_texture(mc, slots[i], &tex);
+    if (tex && tex->pixels)
+    {
+      blit_texture_scaled(game->buffer, (int)game->render_w,
+                          (int)game->render_h, tex, x + 4, y + 4, slot_size - 8);
+    }
+
+    bool selected = (mc->selected_block == slots[i]);
+    u32 outline = selected ? WHITE : 0x80FFFFFFu;
+    draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+               (v2i){x, y}, (v2i){x + slot_size, y}, outline);
+    draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+               (v2i){x, y + slot_size}, (v2i){x + slot_size, y + slot_size}, outline);
+    draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+               (v2i){x, y}, (v2i){x, y + slot_size}, outline);
+    draw_linei(game->buffer, (int)game->render_w, (int)game->render_h,
+               (v2i){x + slot_size, y}, (v2i){x + slot_size, y + slot_size}, outline);
+  }
+
+  draw_text(game->buffer, game->render_w,
+            (v2i){panel_x + padding, panel_y + padding}, "Inventory (E)", WHITE);
 }
 
 static void cycle_block(Mc *mc, bool forward)
@@ -568,6 +660,7 @@ bool mc_init(Mc *mc)
   mc->grounded = false;
   mc->last_ticks = SDL_GetTicks();
   mc->running = true;
+  mc->game.inventory_open = false;
 
   int block_count = mc->size_x * (mc->y_max - mc->y_min + 1) * mc->size_z;
   mc->blocks = calloc((size_t)block_count, sizeof(BlockType));
@@ -764,6 +857,10 @@ void mc_handle_event(Mc *mc, const SDL_Event *event)
         resize_render(&mc->game, w, h, mc->render_scale);
       }
     }
+    if (event->key.keysym.sym == SDLK_e)
+    {
+      game->inventory_open = !game->inventory_open;
+    }
     break;
   case SDL_MOUSEWHEEL:
     if (event->wheel.y > 0)
@@ -880,7 +977,10 @@ void mc_frame(Mc *mc, Uint32 now, float dt)
       remaining -= step;
 
       v3f move_dir = {0};
-      if (state[SDL_SCANCODE_W])
+      bool forward_pressed = state[SDL_SCANCODE_W];
+      bool sprinting = forward_pressed &&
+                       (state[SDL_SCANCODE_LSHIFT] || state[SDL_SCANCODE_RSHIFT]);
+      if (forward_pressed)
       {
         move_dir = v3_add(move_dir, forward_flat);
       }
@@ -899,7 +999,8 @@ void mc_frame(Mc *mc, Uint32 now, float dt)
       if (v3_dot(move_dir, move_dir) > 0.0f)
       {
         move_dir = v3_normalize(move_dir);
-        mc->camera.pos = v3_add(mc->camera.pos, v3_scale(move_dir, WALK_SPEED * step));
+        float speed = WALK_SPEED * (sprinting ? 2.0f : 1.0f);
+        mc->camera.pos = v3_add(mc->camera.pos, v3_scale(move_dir, speed * step));
       }
 
       // Jump only allow when grounded
@@ -1288,6 +1389,7 @@ void mc_frame(Mc *mc, Uint32 now, float dt)
   draw_text(game->buffer, game->render_w, (v2i){5, 50}, block_text, WHITE);
 
   draw_block_preview(mc);
+  draw_inventory(mc);
 
   // Crosshair at the render center
   v2i center = {(int)(game->render_w / 2), (int)(game->render_h / 2)};

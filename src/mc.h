@@ -32,6 +32,7 @@ typedef struct
   float *depth;
   u32 pitch;
   bool mouse_grabbed;
+  bool inventory_open;
 } Game;
 
 typedef struct
